@@ -9,26 +9,27 @@ typedef void (*SendMessage)(const char* message,
                             void* data);
 
 struct MessageCallback {
-    void* user_data;
-    SendMessage callback;
+  void* user_data;
+  SendMessage function;
 };
 
-EXPORT PeerConnection* CreatePeerConnection(ProcessingThread* thread,
-                                              MessageCallback send_websocket_message,
-                                              MessageCallback send_data_channel_message);
+EXPORT PeerConnection* CreatePeerConnection(
+    ProcessingThread* thread,
+    MessageCallback send_websocket_message,
+    MessageCallback send_data_channel_message);
 
 EXPORT void DeletePeerConnection(ProcessingThread* thread,
-                                   PeerConnection* peer);
+                                 PeerConnection* peer);
 
 EXPORT void OnWebsocketMessage(ProcessingThread* thread,
-                            PeerConnection* peer,
-                            const char* message,
-                            int message_length);
+                               PeerConnection* peer,
+                               const char* message,
+                               int message_length);
 
 EXPORT void OnDataChannelMessage(ProcessingThread* thread,
-                            PeerConnection* peer,
-                            const char* message,
-                            int message_length);
+                                 PeerConnection* peer,
+                                 const char* message,
+                                 int message_length);
 
 EXPORT ProcessingThread* CreateProcessingThread();
 EXPORT void DeleteProcessingThread(ProcessingThread* thread);

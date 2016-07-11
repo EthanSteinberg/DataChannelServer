@@ -25,8 +25,10 @@ ProcessingThread* CreateProcessingThread() {
   return result;
 }
 
-void ApplyMessageCallback(const MessageCallback& callback, const std::string& message) {
-  callback.callback(message.data(), message.size(), callback.data);
+template<typename T>
+void ApplyMessageCallback(const MessageCallback& callback,
+                          const T& message) {
+  callback.function((const char*)message.data(), message.size(), callback.user_data);
 }
 
 class Foo;
@@ -45,6 +47,7 @@ struct PeerConnection {
 
 class ChannelThingy : public webrtc::DataChannelObserver {
  public:
+  ChannelThingy(PeerConnection* a_peer) : peer(a_peer) {}
  private:
   // The data channel state have changed.
   void OnStateChange() override { printf("STATE CHANGE FOR CHANNEL\n"); }
@@ -52,11 +55,14 @@ class ChannelThingy : public webrtc::DataChannelObserver {
   //  A data buffer was successfully received.
   void OnMessage(const webrtc::DataBuffer& buffer) override {
     printf("GOT MESSAGE %s\n", buffer.data.data());
+    ApplyMessageCallback(peer->send_data_channel_message, buffer.data);
   }
   // The data channel's buffered_amount has changed.
   void OnBufferedAmountChange(uint64_t previous_amount) override {
     printf("BUFFER AMOUNT CHANGE? WTF? %lu\n", previous_amount);
   }
+
+  PeerConnection* peer;
 };
 
 class Foo : public webrtc::PeerConnectionObserver {
@@ -128,7 +134,7 @@ class Foo : public webrtc::PeerConnectionObserver {
 
     std::string message = rtc::JsonValueToString(root);
 
-    peer->user_send_message(message.data(), message.size(), peer->user_data);
+    ApplyMessageCallback(peer->send_websocket_message, message);
   }
 
   // Ice candidates have been removed.
@@ -160,7 +166,7 @@ class SetLocalOfferObserver : public webrtc::SetSessionDescriptionObserver {
 
     std::string message = rtc::JsonValueToString(root);
 
-    peer->user_send_message(message.data(), message.size(), peer->user_data);
+    ApplyMessageCallback(peer->send_websocket_message, message);
   }
   void OnFailure(const std::string& error) {
     printf("FAILFAILFAILFAIL SET LOCAL OFFER %s\n", error.c_str());
@@ -213,15 +219,17 @@ class CreateOfferObserver : public webrtc::CreateSessionDescriptionObserver {
   PeerConnection* peer;
 };
 
-EXPORT PeerConnection* CreatePeerConnection(ProcessingThread* thread,
-                                            MessageCallback send_websocket_message,
-                                            MessageCallback send_data_channel_message) {
+EXPORT PeerConnection* CreatePeerConnection(
+    ProcessingThread* thread,
+    MessageCallback send_websocket_message,
+    MessageCallback send_data_channel_message) {
   return thread->thread->Invoke<PeerConnection*>(
-      RTC_FROM_HERE, [thread, send_message, data]() {
+      RTC_FROM_HERE,
+      [thread, send_websocket_message, send_data_channel_message]() {
         PeerConnection* peer = new PeerConnection();
         peer->send_websocket_message = send_websocket_message;
         peer->send_data_channel_message = send_data_channel_message;
-        peer->channel = std::unique_ptr<ChannelThingy>(new ChannelThingy());
+        peer->channel = std::unique_ptr<ChannelThingy>(new ChannelThingy(peer));
 
         webrtc::PeerConnectionInterface::RTCConfiguration config;
         webrtc::PeerConnectionInterface::IceServer ice_server;
@@ -331,28 +339,30 @@ void ProcessWebsocketMessage(PeerConnection* peer, const std::string& message) {
 }
 
 void OnWebsocketMessage(ProcessingThread* thread,
-                     PeerConnection* peer,
-                     const char* message,
-                     int message_length) {
+                        PeerConnection* peer,
+                        const char* message,
+                        int message_length) {
   std::string data(message, message_length);
 
-  auto handle = OnceFunctor([peer, data]() { ProcessWebsocketMessage(peer, data); });
+  auto handle =
+      OnceFunctor([peer, data]() { ProcessWebsocketMessage(peer, data); });
 
   thread->thread->Post(RTC_FROM_HERE, handle);
 }
 
-
-void ProcessDataChannelMessage(PeerConnection* peer, const std::string& message) {
-
+void ProcessDataChannelMessage(PeerConnection* peer,
+                               const std::string& message) {
+  peer->data_channel->Send(webrtc::DataBuffer(message));
 }
 
 void OnDataChannelMessage(ProcessingThread* thread,
-                     PeerConnection* peer,
-                     const char* message,
-                     int message_length) {
+                          PeerConnection* peer,
+                          const char* message,
+                          int message_length) {
   std::string data(message, message_length);
 
-  auto handle = OnceFunctor([peer, data]() { ProcessDataChannelMessage(peer, data); });
+  auto handle =
+      OnceFunctor([peer, data]() { ProcessDataChannelMessage(peer, data); });
 
   thread->thread->Post(RTC_FROM_HERE, handle);
 }

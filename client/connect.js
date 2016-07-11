@@ -1,7 +1,9 @@
 console.log('I WIN');
 
-var port = 9026;
+var port = 9021;
 var server = 'localhost';
+
+connectToServer(server, port);
 
 function connectToServer(server, port) {
   return new Promise(function(resolve, reject) {
@@ -23,6 +25,10 @@ function connectToServer(server, port) {
     peerConnection.ondatachannel =
         function(event) {
       console.log('Got channel ', event);
+
+      event.channel.onmessage = function(event) {
+        console.log('Got message', event);
+      }
       resolve(event.channel);
     }
 
