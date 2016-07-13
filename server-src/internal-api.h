@@ -1,3 +1,5 @@
+#pragma once
+
 #define EXPORT __attribute__((visibility("default")))
 
 extern "C" {
@@ -8,6 +10,8 @@ typedef void (*SendMessage)(const char* message,
                             int message_length,
                             void* data);
 
+typedef void (*OnOpen)(void* data);
+
 struct MessageCallback {
   void* user_data;
   SendMessage function;
@@ -16,7 +20,9 @@ struct MessageCallback {
 EXPORT PeerConnection* CreatePeerConnection(
     ProcessingThread* thread,
     MessageCallback send_websocket_message,
-    MessageCallback send_data_channel_message);
+    MessageCallback send_data_channel_message,
+    OnOpen on_open,
+    void* on_open_data);
 
 EXPORT void DeletePeerConnection(ProcessingThread* thread,
                                  PeerConnection* peer);

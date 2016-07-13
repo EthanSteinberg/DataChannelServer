@@ -15,7 +15,7 @@
           'target_name' : 'DataChannelServer',
           'type' : 'shared_library',
           'sources' : [
-            'src/internal-api.cc',
+            'server-src/internal-api.cc',
           ],
           'dependencies' : [
             '../webrtc/api/api.gyp:libjingle_peerconnection',

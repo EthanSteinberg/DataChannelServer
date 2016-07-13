@@ -1,4 +1,4 @@
-#include "DataChannelServer/src/internal-api.h"
+#include "DataChannelServer/server-src/internal-api.h"
 
 #include "webrtc/api/peerconnectioninterface.h"
 #include "webrtc/api/test/fakeconstraints.h"
@@ -34,7 +34,6 @@ void ApplyMessageCallback(const MessageCallback& callback,
 class Foo;
 class ChannelThingy;
 struct PeerConnection {
-  rtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection;
   std::unique_ptr<Foo> f;
   std::unique_ptr<ChannelThingy> channel;
   rtc::scoped_refptr<webrtc::CreateSessionDescriptionObserver> offer_obs;
@@ -43,6 +42,12 @@ struct PeerConnection {
   MessageCallback send_data_channel_message;
   MessageCallback send_websocket_message;
   rtc::scoped_refptr<webrtc::DataChannelInterface> data_channel;
+
+  OnOpen on_open;
+  void* on_open_data;
+
+
+  rtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection;
 };
 
 class ChannelThingy : public webrtc::DataChannelObserver {
@@ -50,11 +55,16 @@ class ChannelThingy : public webrtc::DataChannelObserver {
   ChannelThingy(PeerConnection* a_peer) : peer(a_peer) {}
  private:
   // The data channel state have changed.
-  void OnStateChange() override { printf("STATE CHANGE FOR CHANNEL\n"); }
+  void OnStateChange() override {
+    printf("STATE CHANGE FOR CHANNEL %d\n", peer->data_channel->state());
+    if (peer->data_channel->state() == webrtc::DataChannelInterface::kOpen) {
+      peer->on_open(peer->on_open_data);
+    }
+  }
 
   //  A data buffer was successfully received.
   void OnMessage(const webrtc::DataBuffer& buffer) override {
-    printf("GOT MESSAGE %s\n", buffer.data.data());
+    printf("GOT MESSAGE %s\n", std::string((char*)buffer.data.data(), buffer.data.size()).c_str());
     ApplyMessageCallback(peer->send_data_channel_message, buffer.data);
   }
   // The data channel's buffered_amount has changed.
@@ -138,8 +148,6 @@ class Foo : public webrtc::PeerConnectionObserver {
   }
 
   // Ice candidates have been removed.
-  // TODO(honghaiz): Make this a pure virtual method when all its subclasses
-  // implement it.
   virtual void OnIceCandidatesRemoved(
       const std::vector<cricket::Candidate>& candidates) {
     printf("ICE remove\n");
@@ -222,13 +230,16 @@ class CreateOfferObserver : public webrtc::CreateSessionDescriptionObserver {
 EXPORT PeerConnection* CreatePeerConnection(
     ProcessingThread* thread,
     MessageCallback send_websocket_message,
-    MessageCallback send_data_channel_message) {
+    MessageCallback send_data_channel_message, OnOpen on_open, void* on_open_data) {
   return thread->thread->Invoke<PeerConnection*>(
       RTC_FROM_HERE,
-      [thread, send_websocket_message, send_data_channel_message]() {
+      [thread, send_websocket_message, send_data_channel_message, on_open, on_open_data]() {
         PeerConnection* peer = new PeerConnection();
         peer->send_websocket_message = send_websocket_message;
         peer->send_data_channel_message = send_data_channel_message;
+        peer->on_open = on_open;
+        peer->on_open_data = on_open_data;
+
         peer->channel = std::unique_ptr<ChannelThingy>(new ChannelThingy(peer));
 
         webrtc::PeerConnectionInterface::RTCConfiguration config;
@@ -352,7 +363,9 @@ void OnWebsocketMessage(ProcessingThread* thread,
 
 void ProcessDataChannelMessage(PeerConnection* peer,
                                const std::string& message) {
-  peer->data_channel->Send(webrtc::DataBuffer(message));
+  if (!peer->data_channel->Send(webrtc::DataBuffer(message))) {
+    printf("THE SEND FOR DATA CHANNEL DIDN'T WORK PROPERLY!\n");
+  }
 }
 
 void OnDataChannelMessage(ProcessingThread* thread,
