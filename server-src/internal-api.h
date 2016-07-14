@@ -6,33 +6,38 @@ extern "C" {
 struct PeerConnection;
 struct ProcessingThread;
 
-typedef void (*SendMessage)(const char* message,
-                            int message_length,
-                            void* data);
+struct PeerConnectionObserver {
+  void (*Deleter)(void* data);
 
-typedef void (*OnOpen)(void* data);
+  void (*OnOpen)(void* data);
+  void (*OnClose)(void* data);
 
-struct MessageCallback {
-  void* user_data;
-  SendMessage function;
+  void (*ProcessWebsocketMessage)(void* data, const char* message, int message_length);
+  void (*ProcessDataChannelMessage)(void* data, const char* message, int message_length);
+
+  void* data;
+};
+
+struct DataChannelOptions {
+  bool ordered;
+  int maxRetransmitTime;
+  int maxRetransmits;
 };
 
 EXPORT PeerConnection* CreatePeerConnection(
     ProcessingThread* thread,
-    MessageCallback send_websocket_message,
-    MessageCallback send_data_channel_message,
-    OnOpen on_open,
-    void* on_open_data);
+    PeerConnectionObserver observer,
+    DataChannelOptions options);
 
 EXPORT void DeletePeerConnection(ProcessingThread* thread,
                                  PeerConnection* peer);
 
-EXPORT void OnWebsocketMessage(ProcessingThread* thread,
+EXPORT void SendWebsocketMessage(ProcessingThread* thread,
                                PeerConnection* peer,
                                const char* message,
                                int message_length);
 
-EXPORT void OnDataChannelMessage(ProcessingThread* thread,
+EXPORT void SendDataChannelMessage(ProcessingThread* thread,
                                  PeerConnection* peer,
                                  const char* message,
                                  int message_length);

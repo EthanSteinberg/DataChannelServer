@@ -24,6 +24,10 @@ var LibraryDataChannelClient = {
                 var peerConnection = new RTCPeerConnection(peerConnectionConfig);
                 var socket = new WebSocket('ws://' + server + ':' + port);
 
+                socket.onclose = function(close) {
+                    reject('Closed with reason "' + close.reason + '" and code ' + close.code);
+                }
+
                 peerConnection.ondatachannel =
                     function(event) {
                         console.log('Got channel ', event);
@@ -86,17 +90,29 @@ var LibraryDataChannelClient = {
         }
     },
 
-    CreatePeerConnection: function(server, port, callback, user_data) {
-        server = name = Pointer_stringify(name);
+    CreatePeerConnection: function(server, port, callback, user_data, error_callback, error_data) {
+        server = Pointer_stringify(server);
         DataChannelClient.connectToServer(server, port).then(function(channel) {
             var id = DataChannelClient.counter++;
             DataChannelClient.connections[id] = channel;
             channel.binaryType = 'arraybuffer';
             Runtime.dynCall('vii', callback, [id, user_data]);
+        }, function(error) {
+            console.log('got error', error);
+
+            var ptr = Module._malloc(error.length);
+            writeStringToMemory(error, ptr, true);
+            Runtime.dynCall('viii', error_callback, [ptr, error.length, error_data]);
+            Module._free(ptr);
         });
     },
 
     DeletePeerConnection: function(peer_handle) {
+        var channel = DataChannelClient.connections[peer_handle];
+        console.log("CLOSE ME");
+        channel.onmessage = null;
+        channel.onclose = null;
+        channel.close();
         DataChannelClient.connections[peer_handle] = null;
     },
 
@@ -113,6 +129,14 @@ var LibraryDataChannelClient = {
 
             Runtime.dynCall('viii', callback, [ptr, event.data.length, user_data]);
             Module._free(ptr);
+        }
+    },
+
+    SetOnCloseCallback: function(peer_handle, callback, user_data) {
+        var channel = DataChannelClient.connections[peer_handle];
+        channel.onclose = function(event) {
+            console.log('Got close', event);
+            Runtime.dynCall('vi', callback, [user_data]);
         }
     },
 

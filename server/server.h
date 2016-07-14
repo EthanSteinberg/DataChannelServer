@@ -20,18 +20,6 @@ using websocketpp::lib::bind;
 // pull out the type of messages sent by our config
 typedef server::message_ptr message_ptr;
 
-inline void SendMessageWrapper(const char* message, int message_length, void* data) {
-  auto func = reinterpret_cast<MessageHandler*>(data);
-  (*func)(message, message_length);
-}
-
-inline MessageCallback WrapFunction(MessageHandler* function) {
-  MessageCallback result;
-  result.user_data = reinterpret_cast<void*>(function);
-  result.function = SendMessageWrapper;
-
-  return result;
-}
 
 struct PeerConnectionDeleter {
   explicit PeerConnectionDeleter(ProcessingThread* a_thread)
@@ -42,62 +30,102 @@ struct PeerConnectionDeleter {
   ProcessingThread* thread;
 };
 
-class ServerDataChannel : public DataChannel {
- public:
-  ServerDataChannel(MessageHandler a_send_message_callback)
-      : send_message_callback(a_send_message_callback) {}
+template <typename T>
+class Inner {
+public:
+  Inner(boost::asio::io_service& service, std::unique_ptr<T> impl) : service_(service), impl_(std::move(impl)) {
 
-  void SendMessage(const char* message, int message_length) override {
-    send_message_callback(message, message_length);
   }
 
-  void SetMessageHandler(MessageHandler handler) override {
-    callback = handler;
+  template <typename F>
+  void Wrap(F functor) {
+    service_.dispatch([this, functor]() { functor(impl_.get()); });
   }
 
-  const MessageHandler& GetMessageHandler() {
-    return callback;
-  }
 
- private:
-  MessageHandler callback;
-  MessageHandler send_message_callback;
+private:
+  boost::asio::io_service& service_;
+  std::unique_ptr<T> impl_;
 };
 
+template <typename T>
+PeerConnectionObserver WrapObserverImplementation(boost::asio::io_service& service, std::unique_ptr<T> impl) {
+  PeerConnectionObserver result;
+
+  result.data = new Inner<T>(service, std::move(impl));
+
+  result.Deleter = [](void *data) {
+    Inner<T>* inner = (Inner<T>*)(data);
+    inner->Wrap([inner](T*) { delete inner; });
+  };
+
+  result.OnOpen = [](void* data) {
+    Inner<T>* inner = (Inner<T>*)(data);
+    inner->Wrap([](T* impl) { impl->OnOpen(); });
+  };
+
+  result.OnClose = [](void* data) {
+    Inner<T>* inner = (Inner<T>*)(data);
+    inner->Wrap([](T* impl) { impl->OnClose(); });
+  };
+
+  result.ProcessWebsocketMessage = [](void* data, const char* message, int message_length) {
+    Inner<T>* inner = (Inner<T>*)(data);
+    std::string message_str(message, message_length);
+    inner->Wrap([message_str](T* impl) { impl->ProcessWebsocketMessage(message_str); });
+  };
+
+  result.ProcessDataChannelMessage = [](void* data, const char* message, int message_length) {
+    Inner<T>* inner = (Inner<T>*)(data);
+    std::string message_str(message, message_length);
+    inner->Wrap([message_str](T* impl) { impl->ProcessDataChannelMessage(message_str); });
+  };
+
+  return result;
+}
+
+struct DataChannelSettings {
+  DataChannelSettings() : ordered(true),  maxRetransmits(-1), maxRetransmitTime(-1) {}
+
+  bool ordered; // True to force ordered delivery.
+  int maxRetransmits; // How many retransmits before giving up.
+  int maxRetransmitTime; // How long before giving up on retransmission.
+};
+
+DataChannelOptions ConvertSettings(DataChannelSettings settings) {
+  DataChannelOptions options;
+  options.ordered = settings.ordered;
+  options.maxRetransmits = settings.maxRetransmits;
+  options.maxRetransmitTime = settings.maxRetransmitTime;
+
+  return options;
+}
+
+
 struct ServerData {
-  ServerData(
-          MessageHandler send_websocket_message,
-          MessageHandler send_data_channel_message,
-              OnOpen on_open_callback,
-              void* on_open_data,
-              ProcessingThread* a_thread)
+  ServerData(ProcessingThread* a_thread,
+            PeerConnectionObserver observer,
+            std::shared_ptr<std::weak_ptr<DataChannel>> a_channel_holder,
+            DataChannelOptions options)
       : thread(a_thread),
-        send_websocket_message_callback(
-            new MessageHandler(send_websocket_message)),
-        send_data_channel_message_callback(
-            new MessageHandler(send_data_channel_message)),
         peer(CreatePeerConnection(
                  thread,
-                 WrapFunction(send_websocket_message_callback.get()),
-                 WrapFunction(send_data_channel_message_callback.get()),
-                 on_open_callback, on_open_data),
-             PeerConnectionDeleter(thread)) {}
+                  observer,
+                  options
+                ),
+             PeerConnectionDeleter(thread)),
+             channel_holder(a_channel_holder) {}
 
   ProcessingThread* thread;
 
-  std::unique_ptr<std::function<void(const char*, int)>>
-      send_websocket_message_callback;
-  std::unique_ptr<std::function<void(const char*, int)>>
-      send_data_channel_message_callback;
-
   std::unique_ptr<PeerConnection, PeerConnectionDeleter> peer;
-
-  std::weak_ptr<ServerDataChannel> channel;
+  std::shared_ptr<std::weak_ptr<DataChannel>> channel_holder;
 };
 
 class Server {
+
  public:
-  Server(int port) : thread(CreateProcessingThread()) {
+  Server(int port, DataChannelSettings settings = DataChannelSettings() ) : thread(CreateProcessingThread()), settings_(settings) {
     try {
       printf("Actually starting ...\n");
       // Set logging settings
@@ -145,54 +173,17 @@ class Server {
     void operator()(ProcessingThread* peer) { DeleteProcessingThread(peer); }
   };
 
-  std::unique_ptr<ProcessingThread, ProcessingThreadDeleter> thread;
-
-  MessageHandler CreateSendWebsocketMessageCallback(
-      websocketpp::connection_hdl hdl) {
-    return [this, hdl](const char* message, int message_length) {
-      std::string data(message, message_length);
-      service_.dispatch([this, hdl, data]() {
-        echo_server_.send(hdl, data, websocketpp::frame::opcode::text);
-      });
-    };
-  }
-
-  MessageHandler CreateSendDataChannelMessage(websocketpp::connection_hdl hdl) {
-    return
-        [this, hdl](const char* message, int message_length) {
-          std::string data(message, message_length);
-          service_.dispatch(
-              [this, data, hdl]() {
-                          get_data(hdl).channel.lock()->GetMessageHandler()(data.data(), data.size()); });
-        };
-  }
-
   void on_message(websocketpp::connection_hdl hdl, message_ptr msg) {
-    std::cout << "on_message called with hdl: " << hdl.lock().get()
-              << " and message: " << msg->get_payload() << std::endl;
+    ServerData& channel = get_data(hdl);
 
-    // check for a special command to instruct the server to stop listening so
-    // it can be cleanly exited.
-    if (msg->get_payload() == "stop-listening") {
-      echo_server_.stop_listening();
-      return;
-    }
-
-    auto iter = connection_info_.find(hdl);
-    if (iter == connection_info_.end()) {
-      printf("I CAN'T BELIEVE THE CONNECTION INFO IS NOT IN THERE >>>>>\n");
-    }
-
-    ServerData& channel = iter->second;
-
-    OnWebsocketMessage(thread.get(), channel.peer.get(),
+    SendWebsocketMessage(thread.get(), channel.peer.get(),
                        msg->get_payload().data(), msg->get_payload().size());
   }
 
   ServerData& get_data(websocketpp::connection_hdl hdl) {
     auto iter = connection_info_.find(hdl);
     if (iter == connection_info_.end()) {
-      printf("I CAN'T BELIEVE THE CONNECTION INFO IS NOT IN THERE >>>>>\n");
+      std::cout << "Internal Error: Unable to find connection " << hdl.lock();
       abort();
     }
 
@@ -200,45 +191,96 @@ class Server {
   }
 
   void on_open(websocketpp::connection_hdl hdl) {
-    std::cout << "on_open called with hdl: " << hdl.lock().get() << std::endl;
+    class PeerConnectionObserverImplementation {
+      public:
+        PeerConnectionObserverImplementation(Server *server, websocketpp::connection_hdl hdl, std::shared_ptr<std::weak_ptr<DataChannel>> channel_holder):
+        server_(server), hdl_(hdl), channel_holder_(channel_holder) {}
 
-    auto on_open_callback = [](void* data) {
-      std::function<void()>* func = reinterpret_cast<std::function<void()>*>(data);
-      (*func)();
-      delete func;
+        void OnOpen() {
+            auto send_message_callback = [this](const std::string& message) {
+              ServerData& channel = server_->get_data(hdl_);
+              SendDataChannelMessage(server_->thread.get(), channel.peer.get(), message.data(), message.size());
+            };
+
+            auto close_channel_callback = [this]() {
+              std::error_code error_code;
+              server_->echo_server_.close(hdl_, websocketpp::close::status::normal, "server requested to quit", error_code);
+              if (error_code) {
+                std::cout << "Had error while closing " << error_code.message() << std::endl;
+              }
+              server_->connection_info_.erase(hdl_);
+            };
+
+            auto channel = std::make_shared<DataChannel>(send_message_callback, close_channel_callback);
+            *channel_holder_ = channel;
+            server_->connection_handler_(channel);
+        }
+
+        void OnClose() {
+            auto actual_channel = channel_holder_->lock();
+            if (actual_channel != nullptr) {
+              actual_channel->GetOnCloseHandler()();
+            }
+        }
+
+        void ProcessWebsocketMessage(const std::string& message) {
+            std::error_code error_code;
+            server_->echo_server_.send(hdl_, message, websocketpp::frame::opcode::text, error_code);
+            if (error_code) {
+                std::cout << "Had error while sending " << error_code.message() << std::endl;
+              }
+        }
+
+        void ProcessDataChannelMessage(const std::string& message) {
+            auto actual_channel = channel_holder_->lock();
+            if (actual_channel != nullptr) {
+              actual_channel->GetOnMessageHandler()(message);
+            }
+        }
+      private:
+        Server* server_;
+        websocketpp::connection_hdl hdl_;
+        std::shared_ptr<std::weak_ptr<DataChannel>> channel_holder_;
     };
 
-    void* on_open_data = new std::function<void()>([this, hdl]() {
+    auto channel_holder = std::make_shared<std::weak_ptr<DataChannel>>();
 
-      auto send_message_callback = [this, hdl](const char* message, int message_length) {
-        ServerData& channel = get_data(hdl);
-        OnDataChannelMessage(thread.get(), channel.peer.get(), message, message_length);
-      };
-
-
-      auto data_channel = std::make_shared<ServerDataChannel>(send_message_callback);
-      ServerData& channel = get_data(hdl);
-      channel.channel = data_channel;
-      connection_handler_(data_channel);
-    });
-
-    ServerData data(CreateSendWebsocketMessageCallback(hdl), CreateSendDataChannelMessage(hdl), on_open_callback, on_open_data, thread.get());
+    ServerData data(
+      thread.get(),
+      WrapObserverImplementation(service_, std::make_unique<PeerConnectionObserverImplementation>(this, hdl, channel_holder)),
+      channel_holder,
+      ConvertSettings(settings_)
+    );
 
     connection_info_.emplace(hdl, std::move(data));
   }
 
   void on_close(websocketpp::connection_hdl hdl) {
     std::cout << "on_close called with hdl: " << hdl.lock().get() << std::endl;
-
-    connection_info_.erase(hdl);
+    auto iter = connection_info_.find(hdl);
+    if (iter == connection_info_.end()) {
+      std::cout<<"Already closed it" << std::endl;
+      return;
+    }
+    ServerData& channel = iter->second;
+    auto actual_channel = channel.channel_holder->lock();
+    if (actual_channel != nullptr) {
+      actual_channel->GetOnCloseHandler()();
+    } else {
+      connection_info_.erase(hdl);
+    }
   }
+
+  std::unique_ptr<ProcessingThread, ProcessingThreadDeleter> thread;
+
+  DataChannelSettings settings_;
 
   std::map<websocketpp::connection_hdl,
            ServerData,
            std::owner_less<websocketpp::connection_hdl>>
       connection_info_;
 
-  std::function<void(std::shared_ptr<ServerDataChannel>)> connection_handler_;
+  std::function<void(std::shared_ptr<DataChannel>)> connection_handler_;
 
   boost::asio::io_service service_;
   server echo_server_;

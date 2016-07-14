@@ -25,28 +25,49 @@ ProcessingThread* CreateProcessingThread() {
   return result;
 }
 
-template<typename T>
-void ApplyMessageCallback(const MessageCallback& callback,
-                          const T& message) {
-  callback.function((const char*)message.data(), message.size(), callback.user_data);
-}
+class PeerConnectionObserverWrapper {
+public:
+  PeerConnectionObserverWrapper(PeerConnectionObserver observer) : observer_(observer) {}
+
+  ~PeerConnectionObserverWrapper() {
+    observer_.Deleter(observer_.data);
+  }
+
+  void OnOpen() {
+    observer_.OnOpen(observer_.data);
+  }
+
+  void OnClose() {
+    observer_.OnClose(observer_.data);
+  }
+
+  void ProcessWebsocketMessage(const char* message, int message_length) {
+    observer_.ProcessWebsocketMessage(observer_.data, message, message_length);
+  }
+
+  void ProcessDataChannelMessage(const char* message, int message_length) {
+    observer_.ProcessDataChannelMessage(observer_.data, message, message_length);
+  }
+
+private:
+  PeerConnectionObserver observer_;
+};
+
 
 class Foo;
 class ChannelThingy;
 struct PeerConnection {
+public:
+  PeerConnection(PeerConnectionObserver observer) : observer_(observer) {}
+
+  PeerConnectionObserverWrapper observer_;
+
   std::unique_ptr<Foo> f;
   std::unique_ptr<ChannelThingy> channel;
   rtc::scoped_refptr<webrtc::CreateSessionDescriptionObserver> offer_obs;
   rtc::scoped_refptr<webrtc::SetSessionDescriptionObserver> set_local_obs;
   rtc::scoped_refptr<webrtc::SetSessionDescriptionObserver> set_remote_obs;
-  MessageCallback send_data_channel_message;
-  MessageCallback send_websocket_message;
   rtc::scoped_refptr<webrtc::DataChannelInterface> data_channel;
-
-  OnOpen on_open;
-  void* on_open_data;
-
-
   rtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection;
 };
 
@@ -58,14 +79,16 @@ class ChannelThingy : public webrtc::DataChannelObserver {
   void OnStateChange() override {
     printf("STATE CHANGE FOR CHANNEL %d\n", peer->data_channel->state());
     if (peer->data_channel->state() == webrtc::DataChannelInterface::kOpen) {
-      peer->on_open(peer->on_open_data);
+      peer->observer_.OnOpen();
+    } else if (peer->data_channel->state() == webrtc::DataChannelInterface::kClosed) {
+      peer->observer_.OnClose();
     }
   }
 
   //  A data buffer was successfully received.
   void OnMessage(const webrtc::DataBuffer& buffer) override {
     printf("GOT MESSAGE %s\n", std::string((char*)buffer.data.data(), buffer.data.size()).c_str());
-    ApplyMessageCallback(peer->send_data_channel_message, buffer.data);
+    peer->observer_.ProcessDataChannelMessage((char*)buffer.data.data(), buffer.data.size());
   }
   // The data channel's buffered_amount has changed.
   void OnBufferedAmountChange(uint64_t previous_amount) override {
@@ -144,7 +167,7 @@ class Foo : public webrtc::PeerConnectionObserver {
 
     std::string message = rtc::JsonValueToString(root);
 
-    ApplyMessageCallback(peer->send_websocket_message, message);
+    peer->observer_.ProcessWebsocketMessage(message.data(), message.size());
   }
 
   // Ice candidates have been removed.
@@ -174,7 +197,7 @@ class SetLocalOfferObserver : public webrtc::SetSessionDescriptionObserver {
 
     std::string message = rtc::JsonValueToString(root);
 
-    ApplyMessageCallback(peer->send_websocket_message, message);
+    peer->observer_.ProcessWebsocketMessage(message.data(), message.size());
   }
   void OnFailure(const std::string& error) {
     printf("FAILFAILFAILFAIL SET LOCAL OFFER %s\n", error.c_str());
@@ -229,16 +252,12 @@ class CreateOfferObserver : public webrtc::CreateSessionDescriptionObserver {
 
 EXPORT PeerConnection* CreatePeerConnection(
     ProcessingThread* thread,
-    MessageCallback send_websocket_message,
-    MessageCallback send_data_channel_message, OnOpen on_open, void* on_open_data) {
+    PeerConnectionObserver observer,
+    DataChannelOptions options) {
   return thread->thread->Invoke<PeerConnection*>(
       RTC_FROM_HERE,
-      [thread, send_websocket_message, send_data_channel_message, on_open, on_open_data]() {
-        PeerConnection* peer = new PeerConnection();
-        peer->send_websocket_message = send_websocket_message;
-        peer->send_data_channel_message = send_data_channel_message;
-        peer->on_open = on_open;
-        peer->on_open_data = on_open_data;
+      [thread, observer, options]() {
+        PeerConnection* peer = new PeerConnection(observer);
 
         peer->channel = std::unique_ptr<ChannelThingy>(new ChannelThingy(peer));
 
@@ -255,8 +274,13 @@ EXPORT PeerConnection* CreatePeerConnection(
         peer->peer_connection = thread->factory->CreatePeerConnection(
             config, &constraints, nullptr, nullptr, peer->f.get());
 
+        webrtc::DataChannelInit data_channel_config;
+        data_channel_config.ordered = options.ordered;
+        data_channel_config.maxRetransmitTime = options.maxRetransmitTime;
+        data_channel_config.maxRetransmits = options.maxRetransmits;
+
         peer->data_channel =
-            peer->peer_connection->CreateDataChannel("lolchannel", nullptr);
+            peer->peer_connection->CreateDataChannel("lolchannel", &data_channel_config);
         peer->data_channel->RegisterObserver(peer->channel.get());
 
         peer->offer_obs = new rtc::RefCountedObject<CreateOfferObserver>(peer);
@@ -349,7 +373,7 @@ void ProcessWebsocketMessage(PeerConnection* peer, const std::string& message) {
   }
 }
 
-void OnWebsocketMessage(ProcessingThread* thread,
+void SendWebsocketMessage(ProcessingThread* thread,
                         PeerConnection* peer,
                         const char* message,
                         int message_length) {
@@ -368,7 +392,7 @@ void ProcessDataChannelMessage(PeerConnection* peer,
   }
 }
 
-void OnDataChannelMessage(ProcessingThread* thread,
+void SendDataChannelMessage(ProcessingThread* thread,
                           PeerConnection* peer,
                           const char* message,
                           int message_length) {
