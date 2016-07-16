@@ -1,4 +1,4 @@
-DataChannelServer {#mainpage}
+DataChannelServer <!--- {#mainpage} -->
 ============
 
 DataChannelServer is a C++ library for creating WebRTC DataChannel servers.
