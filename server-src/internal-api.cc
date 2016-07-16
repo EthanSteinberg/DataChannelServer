@@ -108,10 +108,6 @@ class Foo : public webrtc::PeerConnectionObserver {
     printf("Signal\n");
   }
 
-  // TODO(deadbeef): Once all subclasses override the scoped_refptr versions
-  // of the below three methods, make them pure virtual and remove the raw
-  // pointer version.
-
   // Triggered when media is received on a new stream from remote peer.
   virtual void OnAddStream(
       rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
@@ -301,7 +297,8 @@ void DeletePeerConnection(ProcessingThread* thread, PeerConnection* peer) {
 }
 
 void DeleteProcessingThread(ProcessingThread* thread) {
-  // TODO
+  thread->thread->Stop();
+  delete thread;
 }
 
 template <typename F>
