@@ -1,6 +1,8 @@
 DataChannelServer
 ============
 
+WARNING: This library is still a work in progress. Feel free to use the code, but the api might change at any time and there are lots of bugs.
+
 
 DataChannelServer is a C++ library for creating WebRTC DataChannel servers.
 
