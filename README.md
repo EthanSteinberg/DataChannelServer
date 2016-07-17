@@ -1,7 +1,7 @@
 DataChannelServer
 ============
 
-WARNING: This library is still a work in progress. Feel free to use the code, but the api might change at any time and there are lots of bugs.
+WARNING: This library is still a work in progress. Feel free to use the code, but the API might change at any time and there are lots of bugs.
 
 
 DataChannelServer is a C++ library for creating WebRTC DataChannel servers.
@@ -67,7 +67,7 @@ int main() {
 In order to use server/server.h, you must have [websocketpp](https://github.com/zaphoyd/websocketpp) and the asio library of  [boost](http://www.boost.org/) installed and linked in your application. See the corresponding library sites for more details.
 
 You must also link to libDataChannelServer.so, which is the C API binding layer between DataChannelServer and webrtc.
-I provide a linux binary in the dist folder that was build on my Debain machine. It might or might not work for you.
+In the dist folder, there are binaries for both Linux and Windows.
 
 In order to build libDataChannelServer.so, you must first setup the webrtc native libraries from https://webrtc.org/native-code/development. You then must copy the DataChannelServer folder into webrtc-checkout/src.
 
